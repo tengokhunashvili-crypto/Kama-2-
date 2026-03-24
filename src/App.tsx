@@ -9,7 +9,39 @@ import { useGLTF, useAnimations, Environment, Float } from "@react-three/drei";
 import { Suspense, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import Papa from "papaparse";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { BrowserRouter, Routes, Route, useNavigate, Link } from "react-router-dom";
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  getDocs
+} from "firebase/firestore";
+import { 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  signOut,
+  User
+} from "firebase/auth";
+import { db, auth } from "./firebase";
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  Plus, 
+  Trash2, 
+  Edit2, 
+  Save, 
+  X, 
+  LogOut, 
+  Settings,
+  ArrowLeft
+} from "lucide-react";
 
 const MENU_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQWkJMSOHk9DU0GtY_0XbHqG9eaYWqyqg5CDhiaaptCwO0clQ8zwkfFLFDnTaDKhhGVN9wBP68bSUUW/pub?output=csv&sheet=FAQ";
 const FAQ_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQWkJMSOHk9DU0GtY_0XbHqG9eaYWqyqg5CDhiaaptCwO0clQ8zwkfFLFDnTaDKhhGVN9wBP68bSUUW/pub?output=csv&sheet=FAQ_REAL"; // Placeholder if they have a real FAQ sheet
@@ -78,6 +110,9 @@ function AnimatedGroup({ children }: { children: React.ReactNode }) {
 interface Product {
   id: string;
   image: string;
+  category_en: string;
+  category_ka: string;
+  order?: number;
   en: {
     name: string;
     description: string[];
@@ -95,6 +130,7 @@ interface Product {
 
 interface FAQItem {
   id: string;
+  order?: number;
   en: {
     question: string;
     answer: string;
@@ -178,7 +214,22 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetchData = async () => {
+    // Fetch from Firestore
+    const q = query(collection(db, "products"), orderBy("order", "asc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        setMenuData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+        setLoading(false);
+      } else {
+        // Fallback to Google Sheets if Firestore is empty
+        fetchFromSheets();
+      }
+    }, (error) => {
+      console.error("Firestore error:", error);
+      fetchFromSheets();
+    });
+
+    const fetchFromSheets = async () => {
       try {
         const response = await fetch(MENU_CSV_URL);
         const csvText = await response.text();
@@ -189,7 +240,6 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
           transformHeader: (header) => header.trim(),
           complete: (results) => {
             const parsedData: Product[] = results.data.map((row: any, index: number) => {
-              // Helper to get value regardless of casing
               const getVal = (keys: string[]) => {
                 const foundKey = Object.keys(row).find(k => keys.includes(k.trim()));
                 return foundKey ? row[foundKey] : "";
@@ -197,14 +247,14 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
 
               const parseDescription = (val: string) => {
                 if (!val) return [];
-                // If it's a long sentence (more than 3 commas or very long), don't split it into a list for the overlay
-                // Actually, let's keep it as an array but handle rendering differently
                 return val.split(",").map((s: string) => s.trim()).filter(Boolean);
               };
 
               return {
-                id: index.toString(),
+                id: `sheet-${index}`,
                 image: getRawGithubUrl(getVal(["Image Link"])),
+                category_en: getVal(["Category ENG"]),
+                category_ka: getVal(["Category GEO"]),
                 en: {
                   name: getVal(["Product name ENG", "Product Name ENG"]),
                   description: parseDescription(getVal(["Description ENG"])),
@@ -229,11 +279,11 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
       }
     };
 
-    fetchData();
+    return () => unsubscribe();
   }, []);
 
   const categories = useMemo(() => {
-    const cats = Array.from(new Set(menuData.map(p => p[lang].category))).filter(Boolean);
+    const cats = Array.from(new Set(menuData.map(p => p[lang === 'en' ? 'category_en' : 'category_ka']))).filter(Boolean);
     return cats;
   }, [menuData, lang]);
 
@@ -372,113 +422,60 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
   const [faqData, setFaqData] = useState<FAQItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [debugData, setDebugData] = useState<string>("");
-  const [showDebug, setShowDebug] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
+  const [debugData, setDebugData] = useState<string>("");
 
   useEffect(() => {
-    const fetchFaq = async () => {
+    const q = query(collection(db, "faqs"), orderBy("order", "asc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        setFaqData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
+        setLoading(false);
+      } else {
+        fetchFromSheets();
+      }
+    }, (error) => {
+      console.error("FAQ Firestore error:", error);
+      fetchFromSheets();
+    });
+
+    const fetchFromSheets = async () => {
       try {
         const response = await fetch(FAQ_CSV_URL);
         const csvText = await response.text();
-        setDebugData(csvText.slice(0, 500)); // Store first 500 chars for debugging
-
-        if (!response.ok) {
-          const statusText = response.statusText || "Unknown Error";
-          console.error(`FAQ Fetch HTTP Error: ${response.status} ${statusText}`);
-          throw new Error(`Failed to fetch FAQ: ${response.status} ${statusText}`);
-        }
         
         const results = Papa.parse(csvText, { header: false, skipEmptyLines: true });
         const data = results.data as any[][];
         
-        if (!data || data.length < 1) {
-          console.warn("FAQ CSV is empty");
+        if (!data || data.length < 2) {
           setLoading(false);
           return;
         }
 
-        // Check if we accidentally fetched the Menu sheet
-        const firstRowStr = JSON.stringify(data[0]).toLowerCase();
-        if (firstRowStr.includes("category") || firstRowStr.includes("product") || firstRowStr.includes("price")) {
-          console.error("Fetched Menu data instead of FAQ data. First row:", firstRowStr);
-          setError(`Fetched wrong sheet (Menu). Please ensure the 'FAQ' sheet is published individually or provide its GID.`);
-          setLoading(false);
-          return;
-        }
-
-        if (data.length < 2) {
-          setLoading(false);
-          return;
-        }
-
-        // Find header row (usually the first row with "Question" or "Answer")
-        const normalize = (s: string) => s ? s.toString().toLowerCase().replace(/[^a-z0-9]/g, "") : "";
-        let headerRowIndex = -1;
-        for (let i = 0; i < Math.min(data.length, 10); i++) {
-          const row = data[i];
-          if (row.some(cell => {
-            const n = normalize(cell);
-            return n.includes("question") || n.includes("quastion") || n.includes("answer");
-          })) {
-            headerRowIndex = i;
-            break;
-          }
-        }
-
-        // Use indices provided by user: B=1 (Q GEO), C=2 (A GEO), D=3 (Q ENG), E=4 (A ENG)
-        let qGeoIdx = 1;
-        let aGeoIdx = 2;
-        let qEngIdx = 3;
-        let aEngIdx = 4;
-
-        // If we found a header row, try to find indices dynamically but fallback to user's indices
-        if (headerRowIndex !== -1) {
-          const headers = data[headerRowIndex];
-          const dynamicQGeo = headers.findIndex(h => normalize(h).includes("question") && (normalize(h).includes("geo") || normalize(h).includes("ka")));
-          const dynamicAGeo = headers.findIndex(h => normalize(h).includes("answer") && (normalize(h).includes("geo") || normalize(h).includes("ka")));
-          const dynamicQEng = headers.findIndex(h => normalize(h).includes("question") && (normalize(h).includes("eng") || normalize(h).includes("en")));
-          const dynamicAEng = headers.findIndex(h => normalize(h).includes("answer") && (normalize(h).includes("eng") || normalize(h).includes("en")));
-
-          // Also check for "quastion" typo
-          const typoQGeo = headers.findIndex(h => normalize(h).includes("quastion") && normalize(h).includes("geo"));
-          const typoQEng = headers.findIndex(h => normalize(h).includes("quastion") && normalize(h).includes("eng"));
-
-          if (dynamicQGeo !== -1) qGeoIdx = dynamicQGeo;
-          else if (typoQGeo !== -1) qGeoIdx = typoQGeo;
-
-          if (dynamicAGeo !== -1) aGeoIdx = dynamicAGeo;
-          
-          if (dynamicQEng !== -1) qEngIdx = dynamicQEng;
-          else if (typoQEng !== -1) qEngIdx = typoQEng;
-
-          if (dynamicAEng !== -1) aEngIdx = dynamicAEng;
-        }
-
-        // Data starts after header if found, otherwise from the beginning
-        const rows = headerRowIndex !== -1 ? data.slice(headerRowIndex + 1) : data;
+        const rows = data.slice(1); // Skip header
 
         const parsed: FAQItem[] = rows.map((row, idx) => ({
-          id: idx.toString(),
+          id: `sheet-${idx}`,
           en: {
-            question: row[qEngIdx] || "",
-            answer: row[aEngIdx] || ""
+            question: row[3] || "",
+            answer: row[4] || ""
           },
           ka: {
-            question: row[qGeoIdx] || "",
-            answer: row[aGeoIdx] || ""
+            question: row[1] || "",
+            answer: row[2] || ""
           }
-        })).filter(item => (item.en.question && item.en.question.length > 2) || (item.ka.question && item.ka.question.length > 2));
+        })).filter(item => item.en.question || item.ka.question);
 
         setFaqData(parsed);
       } catch (err) {
         console.error("FAQ Error:", err);
-        setError(err instanceof Error ? err.message : "An unknown error occurred");
       } finally {
         setLoading(false);
       }
     };
-    fetchFaq();
+
+    return () => unsubscribe();
   }, []);
 
   if (loading) return null;
@@ -578,30 +575,499 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
   );
 }
 
-function LanguageSwitcher({ lang, setLang }: { lang: "en" | "ka"; setLang: (l: "en" | "ka") => void }) {
-  return (
-    <div className="fixed top-12 left-0 right-0 z-[100] pointer-events-none">
-      <div className="max-w-[1440px] mx-auto px-4 md:px-10 flex justify-end">
-        <div className="flex items-center gap-4 pointer-events-auto">
-          <button 
-            onClick={() => setLang("en")}
-            className={`text-[10px] font-bold tracking-[0.2em] transition-all duration-300 uppercase ${
-              lang === "en" ? "text-[#D4FF00]" : "text-white/40 hover:text-white"
-            }`}
-          >
-            EN
+function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [password, setPassword] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [faqs, setFaqs] = useState<FAQItem[]>([]);
+  const [activeTab, setActiveTab] = useState<"products" | "faqs">("products");
+  const [editingProduct, setEditingProduct] = useState<Partial<Product> | null>(null);
+  const [editingFaq, setEditingFaq] = useState<Partial<FAQItem> | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const navigate = useNavigate();
+
+  const syncFromSheets = async () => {
+    if (!window.confirm("This will import data from Google Sheets into Firestore. Continue?")) return;
+    setIsSyncing(true);
+    try {
+      if (activeTab === "products") {
+        const response = await fetch(MENU_CSV_URL);
+        const csvText = await response.text();
+        Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: true,
+          complete: async (results) => {
+            for (const row of results.data as any[]) {
+              const parseDescription = (val: string) => val ? val.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+              await addDoc(collection(db, "products"), {
+                image: getRawGithubUrl(row["Image Link"]),
+                category_en: row["Category ENG"],
+                category_ka: row["Category GEO"],
+                order: products.length,
+                en: {
+                  name: row["Product name ENG"] || row["Product Name ENG"],
+                  description: parseDescription(row["Description ENG"]),
+                  nutrition: row["Nutriotion ENG"] || row["Nutrition ENG"],
+                  category: row["Category ENG"]
+                },
+                ka: {
+                  name: row["Product name GEO"] || row["Product Name GEO"],
+                  description: parseDescription(row["Description GEO"]),
+                  nutrition: row["Nutriotion GEO"] || row["Nutrition GEO"],
+                  category: row["Category GEO"]
+                },
+                createdAt: serverTimestamp()
+              });
+            }
+            alert("Products synced!");
+            setIsSyncing(false);
+          }
+        });
+      } else {
+        const response = await fetch(FAQ_CSV_URL);
+        const csvText = await response.text();
+        Papa.parse(csvText, {
+          header: false,
+          skipEmptyLines: true,
+          complete: async (results) => {
+            const rows = (results.data as any[]).slice(1);
+            for (const row of rows) {
+              await addDoc(collection(db, "faqs"), {
+                order: faqs.length,
+                en: { question: row[3] || "", answer: row[4] || "" },
+                ka: { question: row[1] || "", answer: row[2] || "" }
+              });
+            }
+            alert("FAQs synced!");
+            setIsSyncing(false);
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Sync error:", error);
+      alert("Sync failed. Check console.");
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (isLoggedIn && user) {
+      const qProducts = query(collection(db, "products"), orderBy("order", "asc"));
+      const unsubProducts = onSnapshot(qProducts, (snapshot) => {
+        setProducts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      });
+
+      const qFaqs = query(collection(db, "faqs"), orderBy("order", "asc"));
+      const unsubFaqs = onSnapshot(qFaqs, (snapshot) => {
+        setFaqs(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
+      });
+
+      return () => {
+        unsubProducts();
+        unsubFaqs();
+      };
+    }
+  }, [isLoggedIn, user]);
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (password === "admin") {
+      setIsLoggedIn(true);
+    } else {
+      alert("Incorrect password");
+    }
+  };
+
+  const signIn = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Auth error:", error);
+    }
+  };
+
+  const handleSaveProduct = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingProduct) return;
+
+    try {
+      if (editingProduct.id) {
+        const { id, ...data } = editingProduct;
+        await updateDoc(doc(db, "products", id), data);
+      } else {
+        await addDoc(collection(db, "products"), {
+          ...editingProduct,
+          order: products.length,
+          createdAt: serverTimestamp()
+        });
+      }
+      setEditingProduct(null);
+    } catch (error) {
+      console.error("Save error:", error);
+      alert("Error saving product. Check console.");
+    }
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    if (window.confirm("Delete this product?")) {
+      await deleteDoc(doc(db, "products", id));
+    }
+  };
+
+  const handleSaveFaq = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingFaq) return;
+
+    try {
+      if (editingFaq.id) {
+        const { id, ...data } = editingFaq;
+        await updateDoc(doc(db, "faqs", id), data);
+      } else {
+        await addDoc(collection(db, "faqs"), {
+          ...editingFaq,
+          order: faqs.length
+        });
+      }
+      setEditingFaq(null);
+    } catch (error) {
+      console.error("Save error:", error);
+    }
+  };
+
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <form onSubmit={handleLogin} className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md">
+          <h2 className="text-2xl font-big-noodle text-white mb-6 uppercase tracking-widest text-center">ADMIN LOGIN</h2>
+          <input 
+            type="password" 
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Enter Password"
+            className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-white mb-4 focus:border-[#D4FF00] outline-none"
+          />
+          <button type="submit" className="w-full bg-[#D4FF00] text-black font-bold py-3 rounded-lg hover:bg-[#b8dd00] transition-colors uppercase tracking-widest">
+            ENTER
           </button>
-          <div className="w-[1px] h-3 bg-white/20" />
-          <button 
-            onClick={() => setLang("ka")}
-            className={`text-[10px] font-bold tracking-[0.2em] transition-all duration-300 uppercase ${
-              lang === "ka" ? "text-[#D4FF00]" : "text-white/40 hover:text-white"
-            }`}
-          >
-            KA
+          <Link to="/" className="block text-center text-white/40 text-[10px] mt-6 uppercase tracking-widest hover:text-white">BACK TO SITE</Link>
+        </form>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md text-center">
+          <h2 className="text-2xl font-big-noodle text-white mb-6 uppercase tracking-widest">VERIFY IDENTITY</h2>
+          <p className="text-white/60 text-xs mb-8 uppercase tracking-widest leading-relaxed">Please sign in with your Google account to verify admin access.</p>
+          <button onClick={signIn} className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 transition-colors uppercase tracking-widest flex items-center justify-center gap-3">
+            <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="Google" />
+            SIGN IN WITH GOOGLE
           </button>
         </div>
       </div>
+    );
+  }
+
+  // Check if user is the specific admin
+  if (user.email !== "tengo.khunashvili@gmail.com") {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md text-center">
+          <h2 className="text-2xl font-big-noodle text-red-500 mb-4 uppercase tracking-widest">ACCESS DENIED</h2>
+          <p className="text-white/60 text-xs mb-8 uppercase tracking-widest leading-relaxed">Your account ({user.email}) does not have admin privileges.</p>
+          <button onClick={() => signOut(auth)} className="text-[#D4FF00] text-[10px] font-bold uppercase tracking-widest hover:underline">SIGN OUT</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white p-4 md:p-10">
+      <div className="max-w-[1440px] mx-auto">
+        <div className="flex justify-between items-center mb-12">
+          <div className="flex items-center gap-6">
+            <button onClick={() => navigate("/")} className="text-white/40 hover:text-white transition-colors">
+              <ArrowLeft size={24} />
+            </button>
+            <h1 className="text-3xl md:text-5xl font-big-noodle uppercase tracking-widest">CMS DASHBOARD</h1>
+          </div>
+          <div className="flex items-center gap-6">
+            <span className="text-[10px] text-white/40 uppercase tracking-widest hidden md:block">{user.email}</span>
+            <button onClick={() => signOut(auth)} className="text-red-500 hover:text-red-400 transition-colors">
+              <LogOut size={20} />
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12 border-b border-white/10">
+          <div className="flex gap-4">
+            <button 
+              onClick={() => setActiveTab("products")}
+              className={`pb-4 px-4 text-xs font-bold tracking-[0.2em] uppercase transition-colors ${activeTab === "products" ? "text-[#D4FF00] border-b-2 border-[#D4FF00]" : "text-white/40 hover:text-white"}`}
+            >
+              PRODUCTS
+            </button>
+            <button 
+              onClick={() => setActiveTab("faqs")}
+              className={`pb-4 px-4 text-xs font-bold tracking-[0.2em] uppercase transition-colors ${activeTab === "faqs" ? "text-[#D4FF00] border-b-2 border-[#D4FF00]" : "text-white/40 hover:text-white"}`}
+            >
+              FAQ
+            </button>
+          </div>
+          <button 
+            onClick={syncFromSheets}
+            disabled={isSyncing}
+            className="pb-4 px-4 text-[10px] font-bold tracking-[0.2em] uppercase text-white/20 hover:text-[#D4FF00] transition-colors disabled:opacity-50"
+          >
+            {isSyncing ? "SYNCING..." : "SYNC FROM SHEETS"}
+          </button>
+        </div>
+
+        {activeTab === "products" ? (
+          <div className="space-y-8">
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setEditingProduct({
+                  en: { name: "", description: [], nutrition: "", category: "" },
+                  ka: { name: "", description: [], nutrition: "", category: "" },
+                  image: "",
+                  category_en: "",
+                  category_ka: ""
+                })}
+                className="bg-[#D4FF00] text-black px-6 py-2 rounded-full font-bold text-[10px] tracking-widest uppercase flex items-center gap-2 hover:bg-[#b8dd00] transition-colors"
+              >
+                <Plus size={14} /> ADD PRODUCT
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {products.map(p => (
+                <div key={p.id} className="bg-zinc-900 rounded-2xl border border-white/10 overflow-hidden group">
+                  <div className="aspect-square relative">
+                    <img src={p.image} className="w-full h-full object-cover" alt={p.en.name} />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                      <button onClick={() => setEditingProduct(p)} className="p-3 bg-white text-black rounded-full hover:scale-110 transition-transform"><Edit2 size={18} /></button>
+                      <button onClick={() => handleDeleteProduct(p.id)} className="p-3 bg-red-500 text-white rounded-full hover:scale-110 transition-transform"><Trash2 size={18} /></button>
+                    </div>
+                  </div>
+                  <div className="p-4">
+                    <h4 className="text-sm font-bold uppercase tracking-widest mb-1">{p.en.name}</h4>
+                    <p className="text-[10px] text-white/40 uppercase tracking-widest">{p.category_en}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-8">
+            <div className="flex justify-end">
+              <button 
+                onClick={() => setEditingFaq({
+                  en: { question: "", answer: "" },
+                  ka: { question: "", answer: "" }
+                })}
+                className="bg-[#D4FF00] text-black px-6 py-2 rounded-full font-bold text-[10px] tracking-widest uppercase flex items-center gap-2 hover:bg-[#b8dd00] transition-colors"
+              >
+                <Plus size={14} /> ADD FAQ
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {faqs.map(f => (
+                <div key={f.id} className="bg-zinc-900 p-6 rounded-2xl border border-white/10 flex justify-between items-center">
+                  <div>
+                    <h4 className="text-sm font-bold uppercase tracking-widest mb-2">{f.en.question}</h4>
+                    <p className="text-[10px] text-white/40 uppercase tracking-widest line-clamp-1">{f.en.answer}</p>
+                  </div>
+                  <div className="flex gap-4">
+                    <button onClick={() => setEditingFaq(f)} className="text-white/40 hover:text-[#D4FF00] transition-colors"><Edit2 size={18} /></button>
+                    <button onClick={async () => { if(window.confirm("Delete?")) await deleteDoc(doc(db, "faqs", f.id)) }} className="text-white/40 hover:text-red-500 transition-colors"><Trash2 size={18} /></button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Product Modal */}
+        {editingProduct && (
+          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-zinc-900 w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-3xl border border-white/10 p-8">
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-big-noodle uppercase tracking-widest">{editingProduct.id ? "EDIT PRODUCT" : "NEW PRODUCT"}</h3>
+                <button onClick={() => setEditingProduct(null)} className="text-white/40 hover:text-white"><X size={24} /></button>
+              </div>
+
+              <form onSubmit={handleSaveProduct} className="space-y-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {/* English */}
+                  <div className="space-y-4">
+                    <p className="text-[10px] text-[#D4FF00] font-bold uppercase tracking-widest">ENGLISH DETAILS</p>
+                    <input 
+                      placeholder="Product Name"
+                      value={editingProduct.en?.name}
+                      onChange={e => setEditingProduct({...editingProduct, en: {...editingProduct.en!, name: e.target.value}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                      required
+                    />
+                    <input 
+                      placeholder="Category"
+                      value={editingProduct.category_en}
+                      onChange={e => setEditingProduct({...editingProduct, category_en: e.target.value})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                      required
+                    />
+                    <textarea 
+                      placeholder="Description (comma separated)"
+                      value={editingProduct.en?.description?.join(", ")}
+                      onChange={e => setEditingProduct({...editingProduct, en: {...editingProduct.en!, description: e.target.value.split(",").map(s => s.trim())}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00] h-32"
+                    />
+                    <input 
+                      placeholder="Nutrition"
+                      value={editingProduct.en?.nutrition}
+                      onChange={e => setEditingProduct({...editingProduct, en: {...editingProduct.en!, nutrition: e.target.value}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                    />
+                  </div>
+
+                  {/* Georgian */}
+                  <div className="space-y-4">
+                    <p className="text-[10px] text-[#D4FF00] font-bold uppercase tracking-widest">GEORGIAN DETAILS</p>
+                    <input 
+                      placeholder="პროდუქტის სახელი"
+                      value={editingProduct.ka?.name}
+                      onChange={e => setEditingProduct({...editingProduct, ka: {...editingProduct.ka!, name: e.target.value}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                      required
+                    />
+                    <input 
+                      placeholder="კატეგორია"
+                      value={editingProduct.category_ka}
+                      onChange={e => setEditingProduct({...editingProduct, category_ka: e.target.value})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                      required
+                    />
+                    <textarea 
+                      placeholder="აღწერა (მძიმით გამოყოფილი)"
+                      value={editingProduct.ka?.description?.join(", ")}
+                      onChange={e => setEditingProduct({...editingProduct, ka: {...editingProduct.ka!, description: e.target.value.split(",").map(s => s.trim())}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00] h-32"
+                    />
+                    <input 
+                      placeholder="კვებითი ღირებულება"
+                      value={editingProduct.ka?.nutrition}
+                      onChange={e => setEditingProduct({...editingProduct, ka: {...editingProduct.ka!, nutrition: e.target.value}})}
+                      className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[10px] text-[#D4FF00] font-bold uppercase tracking-widest">MEDIA</p>
+                  <input 
+                    placeholder="Image URL"
+                    value={editingProduct.image}
+                    onChange={e => setEditingProduct({...editingProduct, image: e.target.value})}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                    required
+                  />
+                </div>
+
+                <div className="flex justify-end gap-4 pt-4">
+                  <button type="button" onClick={() => setEditingProduct(null)} className="px-8 py-3 text-xs font-bold uppercase tracking-widest text-white/40 hover:text-white">CANCEL</button>
+                  <button type="submit" className="bg-[#D4FF00] text-black px-12 py-3 rounded-full font-bold text-xs tracking-widest uppercase hover:bg-[#b8dd00] transition-colors">SAVE PRODUCT</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* FAQ Modal */}
+        {editingFaq && (
+          <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div className="bg-zinc-900 w-full max-w-2xl rounded-3xl border border-white/10 p-8">
+              <div className="flex justify-between items-center mb-8">
+                <h3 className="text-2xl font-big-noodle uppercase tracking-widest">{editingFaq.id ? "EDIT FAQ" : "NEW FAQ"}</h3>
+                <button onClick={() => setEditingFaq(null)} className="text-white/40 hover:text-white"><X size={24} /></button>
+              </div>
+
+              <form onSubmit={handleSaveFaq} className="space-y-6">
+                <div className="space-y-4">
+                  <p className="text-[10px] text-[#D4FF00] font-bold uppercase tracking-widest">ENGLISH</p>
+                  <input 
+                    placeholder="Question"
+                    value={editingFaq.en?.question}
+                    onChange={e => setEditingFaq({...editingFaq, en: {...editingFaq.en!, question: e.target.value}})}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                    required
+                  />
+                  <textarea 
+                    placeholder="Answer"
+                    value={editingFaq.en?.answer}
+                    onChange={e => setEditingFaq({...editingFaq, en: {...editingFaq.en!, answer: e.target.value}})}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00] h-24"
+                    required
+                  />
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-[10px] text-[#D4FF00] font-bold uppercase tracking-widest">GEORGIAN</p>
+                  <input 
+                    placeholder="კითხვა"
+                    value={editingFaq.ka?.question}
+                    onChange={e => setEditingFaq({...editingFaq, ka: {...editingFaq.ka!, question: e.target.value}})}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00]"
+                    required
+                  />
+                  <textarea 
+                    placeholder="პასუხი"
+                    value={editingFaq.ka?.answer}
+                    onChange={e => setEditingFaq({...editingFaq, ka: {...editingFaq.ka!, answer: e.target.value}})}
+                    className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-sm outline-none focus:border-[#D4FF00] h-24"
+                    required
+                  />
+                </div>
+
+                <div className="flex justify-end gap-4 pt-4">
+                  <button type="button" onClick={() => setEditingFaq(null)} className="px-8 py-3 text-xs font-bold uppercase tracking-widest text-white/40 hover:text-white">CANCEL</button>
+                  <button type="submit" className="bg-[#D4FF00] text-black px-12 py-3 rounded-full font-bold text-xs tracking-widest uppercase hover:bg-[#b8dd00] transition-colors">SAVE FAQ</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LanguageSwitcher({ lang, setLang }: { lang: "en" | "ka"; setLang: (l: "en" | "ka") => void }) {
+  return (
+    <div className="fixed top-6 right-6 z-[100] flex gap-2">
+      <button 
+        onClick={() => setLang("en")}
+        className={`px-3 py-1 text-[10px] font-bold tracking-widest uppercase transition-all duration-300 rounded-sm border ${lang === "en" ? "bg-[#D4FF00] text-black border-[#D4FF00]" : "text-white/40 border-white/10 hover:text-white"}`}
+      >
+        EN
+      </button>
+      <button 
+        onClick={() => setLang("ka")}
+        className={`px-3 py-1 text-[10px] font-bold tracking-widest uppercase transition-all duration-300 rounded-sm border ${lang === "ka" ? "bg-[#D4FF00] text-black border-[#D4FF00]" : "text-white/40 border-white/10 hover:text-white"}`}
+      >
+        GE
+      </button>
     </div>
   );
 }
@@ -659,15 +1125,13 @@ function Footer({ lang }: { lang: "en" | "ka" }) {
   );
 }
 
-export default function App() {
-  const [lang, setLang] = useState<"en" | "ka">("en");
+function MainApp({ lang, setLang }: { lang: "en" | "ka"; setLang: (l: "en" | "ka") => void }) {
   const animationRef = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: animationRef,
     offset: ["start start", "end end"]
   });
   
-  // Smooth out the scroll progress
   const smoothProgress = useSpring(scrollYProgress, {
     stiffness: 100,
     damping: 30,
@@ -686,15 +1150,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Fixed 3D Model Container - Top level for absolute reliability */}
-      <motion.div 
-        className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center overflow-hidden"
-      >
+      {/* Fixed 3D Model Container */}
+      <motion.div className="fixed inset-0 pointer-events-none z-50 flex items-center justify-center overflow-hidden">
         <div className="w-full h-full">
-          <Canvas 
-            gl={{ alpha: true, antialias: true }}
-            dpr={[1, 2]}
-          >
+          <Canvas gl={{ alpha: true, antialias: true }} dpr={[1, 2]}>
             <Suspense fallback={null}>
               <ambientLight intensity={1.5} />
               <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} intensity={2} />
@@ -710,15 +1169,12 @@ export default function App() {
 
       {/* Content Overlay */}
       <div className="relative z-10" ref={animationRef}>
-        {/* Section 1: Hero & Branding */}
         <main className="flex flex-col items-center pt-12 min-h-screen relative">
-          {/* Logo Section */}
-          <div className="w-full max-w-[1440px] mx-auto px-4 md:px-10 flex justify-center">
-            <motion.header 
-              initial={{ opacity: 0, y: -20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mb-16"
-            >
+          <div className="w-full max-w-[1440px] mx-auto px-4 md:px-10 flex justify-between items-center">
+            <Link to="/admin" className="text-[10px] text-white/20 hover:text-white transition-colors uppercase tracking-widest">
+              <Settings size={16} />
+            </Link>
+            <motion.header initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
               <img 
                 src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/Section%201%20-%20Logo.svg"
                 alt="Kama Logo"
@@ -726,15 +1182,10 @@ export default function App() {
                 referrerPolicy="no-referrer"
               />
             </motion.header>
+            <div className="w-8" /> {/* Spacer */}
           </div>
 
-          {/* Hero Image - Constrained to 1440px Grid */}
-          <motion.section 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2, duration: 0.8 }}
-            className="w-full max-w-[1440px] mx-auto px-4 md:px-10 relative overflow-hidden"
-          >
+          <motion.section initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.2, duration: 0.8 }} className="w-full max-w-[1440px] mx-auto px-4 md:px-10 relative overflow-hidden">
             <div className="w-full relative overflow-hidden">
               <img 
                 src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/Section%201%20-%20Hero%20image.png"
@@ -746,27 +1197,13 @@ export default function App() {
             </div>
           </motion.section>
 
-          {/* Text Blocks Grid */}
           <div className="w-full max-w-[1440px] mx-auto grid grid-cols-2 gap-4 mt-6 px-4 md:px-10">
-            {/* Left Block */}
-            <motion.div 
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-              className="flex flex-col justify-start"
-            >
+            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }} className="flex flex-col justify-start">
               <div className="max-w-[320px] text-[10px] leading-[1.3] tracking-wider text-white/60 font-medium uppercase">
                 <p>SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/ SEO TEXT BLOCK LEFT/</p>
               </div>
             </motion.div>
-
-            {/* Right Block */}
-            <motion.div 
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.4 }}
-              className="flex flex-col justify-start items-end"
-            >
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.4 }} className="flex flex-col justify-start items-end">
               <div className="max-w-[320px] text-[10px] leading-[1.3] tracking-wider text-white/60 font-medium uppercase text-right">
                 <p>SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT// SEO TEXT BLOCK RIGHT//</p>
               </div>
@@ -774,14 +1211,7 @@ export default function App() {
           </div>
         </main>
 
-        {/* Section 2: 300VH Section (3 Viewports) with Background Image and Levitating Assets */}
-        <motion.section 
-          initial={{ opacity: 0 }}
-          whileInView={{ opacity: 1 }}
-          viewport={{ once: true }}
-          className="w-full h-[300vh] mt-32 relative overflow-hidden"
-        >
-          {/* Background Image (Centered) */}
+        <motion.section initial={{ opacity: 0 }} whileInView={{ opacity: 1 }} viewport={{ once: true }} className="w-full h-[300vh] mt-32 relative overflow-hidden">
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <img 
               src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/Fresh%201.png"
@@ -790,66 +1220,42 @@ export default function App() {
               referrerPolicy="no-referrer"
             />
           </div>
-
-          {/* Levitating Assets in Zig-Zag */}
-          
-          {/* 1. Pumpkin (Left) - 2 phase.png */}
-          <motion.div
-            animate={{ y: [0, -30, 0] }}
-            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
-            className="absolute top-[15%] left-[5%] md:left-[10%] z-20"
-          >
-            <img 
-              src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/2%20phase.png"
-              alt="Pumpkin"
-              className="w-40 md:w-72 h-auto drop-shadow-2xl"
-              referrerPolicy="no-referrer"
-            />
+          <motion.div animate={{ y: [0, -30, 0] }} transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }} className="absolute top-[15%] left-[5%] md:left-[10%] z-20">
+            <img src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/2%20phase.png" alt="Pumpkin" className="w-40 md:w-72 h-auto drop-shadow-2xl" referrerPolicy="no-referrer" />
           </motion.div>
-
-          {/* 2. Tomato (Right) - 1 phase.png */}
-          <motion.div
-            animate={{ y: [0, -40, 0] }}
-            transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", delay: 0.5 }}
-            className="absolute top-[45%] right-[5%] md:right-[10%] z-20"
-          >
-            <img 
-              src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/1%20phase.png"
-              alt="Tomato"
-              className="w-40 md:w-72 h-auto drop-shadow-2xl"
-              referrerPolicy="no-referrer"
-            />
+          <motion.div animate={{ y: [0, -40, 0] }} transition={{ duration: 6, repeat: Infinity, ease: "easeInOut", delay: 0.5 }} className="absolute top-[45%] right-[5%] md:right-[10%] z-20">
+            <img src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/1%20phase.png" alt="Tomato" className="w-40 md:w-72 h-auto drop-shadow-2xl" referrerPolicy="no-referrer" />
           </motion.div>
-
-          {/* 3. Mushrooms (Left) - 3 phase.png */}
-          <motion.div
-            animate={{ y: [0, -25, 0] }}
-            transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
-            className="absolute top-[75%] left-[5%] md:left-[15%] z-20"
-          >
-            <img 
-              src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/3%20phase.png"
-              alt="Mushrooms"
-              className="w-40 md:w-72 h-auto drop-shadow-2xl"
-              referrerPolicy="no-referrer"
-            />
+          <motion.div animate={{ y: [0, -25, 0] }} transition={{ duration: 4.5, repeat: Infinity, ease: "easeInOut", delay: 1 }} className="absolute top-[75%] left-[5%] md:left-[15%] z-20">
+            <img src="https://raw.githubusercontent.com/KamaBarTbilisi/Kama-Web-assets/87b07ca5c7cd86f811cf6a7819f166f0d8dc086b/3%20phase.png" alt="Mushrooms" className="w-40 md:w-72 h-auto drop-shadow-2xl" referrerPolicy="no-referrer" />
           </motion.div>
         </motion.section>
       </div>
 
-      {/* Section 3: Menu Section - Higher z-index to appear above GLB */}
       <div className="relative z-[60]">
         <MenuSection lang={lang} />
         <FAQSection lang={lang} />
         <Footer lang={lang} />
       </div>
 
-      {/* Dimension Label */}
       <div className="fixed bottom-6 right-6 z-50">
         <div className="bg-[#007AFF] px-3 py-1 text-[9px] font-bold text-white uppercase tracking-widest rounded-sm shadow-xl">
           1440 GRID
         </div>
       </div>
     </div>
+  );
+}
+
+export default function App() {
+  const [lang, setLang] = useState<"en" | "ka">("en");
+
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<MainApp lang={lang} setLang={setLang} />} />
+        <Route path="/admin" element={<AdminDashboard lang={lang} />} />
+      </Routes>
+    </BrowserRouter>
   );
 }

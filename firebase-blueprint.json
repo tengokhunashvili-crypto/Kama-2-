@@ -1,0 +1,66 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "A menu item with bilingual details and nutritional info.",
+      "type": "object",
+      "properties": {
+        "image": { "type": "string", "description": "URL to the product image" },
+        "category_en": { "type": "string", "description": "Category name in English" },
+        "category_ka": { "type": "string", "description": "Category name in Georgian" },
+        "en": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "nutrition": { "type": "string" }
+          }
+        },
+        "ka": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "description": { "type": "string" },
+            "nutrition": { "type": "string" }
+          }
+        },
+        "order": { "type": "number", "description": "Display order within category" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["image", "category_en", "category_ka", "en", "ka"]
+    },
+    "FAQ": {
+      "title": "FAQ",
+      "description": "A frequently asked question in English and Georgian.",
+      "type": "object",
+      "properties": {
+        "en": {
+          "type": "object",
+          "properties": {
+            "question": { "type": "string" },
+            "answer": { "type": "string" }
+          }
+        },
+        "ka": {
+          "type": "object",
+          "properties": {
+            "question": { "type": "string" },
+            "answer": { "type": "string" }
+          }
+        },
+        "order": { "type": "number" }
+      },
+      "required": ["en", "ka"]
+    }
+  },
+  "firestore": {
+    "products": {
+      "schema": "Product",
+      "description": "Collection of menu items."
+    },
+    "faqs": {
+      "schema": "FAQ",
+      "description": "Collection of frequently asked questions."
+    }
+  }
+}

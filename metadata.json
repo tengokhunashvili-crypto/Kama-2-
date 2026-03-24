@@ -1,5 +1,5 @@
 {
   "name": "Kama Bar Menu",
-  "description": "A bilingual (GEO/ENG) menu for Kama Bar, featuring product categories, descriptions, and nutritional information from a live Google Sheet.",
+  "description": "A bilingual (GEO/ENG) menu for Kama Bar, featuring real-time content management for products and FAQs via a secure admin dashboard powered by Firebase.",
   "requestFramePermissions": []
 }

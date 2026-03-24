@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == "tengo.khunashvili@gmail.com" && 
+        request.auth.token.email_verified == true
+      );
+    }
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: products
+    // Fields: image, category_en, category_ka, en, ka, order, createdAt
+    
+    // Collection: faqs
+    // Fields: en, ka, order
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /products/{productId} {
+      allow read: if true; // Publicly readable
+      allow write: if isAdmin(); // Only admin can edit
+    }
+
+    match /faqs/{faqId} {
+      allow read: if true; // Publicly readable
+      allow write: if isAdmin(); // Only admin can edit
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
