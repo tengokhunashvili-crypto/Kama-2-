@@ -10,28 +10,7 @@ import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } fr
 import * as THREE from "three";
 import Papa from "papaparse";
 import { BrowserRouter, Routes, Route, useNavigate, Link } from "react-router-dom";
-import { 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  query, 
-  orderBy, 
-  serverTimestamp,
-  getDocs,
-  getDocFromServer
-} from "firebase/firestore";
-import { 
-  onAuthStateChanged, 
-  signOut,
-  signInAnonymously,
-  GoogleAuthProvider,
-  signInWithPopup,
-  User
-} from "firebase/auth";
-import { db, auth } from "./firebase";
+import { supabase } from "./supabase";
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -55,31 +34,28 @@ enum OperationType {
   WRITE = 'write',
 }
 
-interface FirestoreErrorInfo {
+interface SupabaseErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
   authInfo: {
     userId: string | undefined;
     email: string | null | undefined;
-    emailVerified: boolean | undefined;
-    isAnonymous: boolean | undefined;
   }
 }
 
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+async function handleSupabaseError(error: any, operationType: OperationType, path: string | null) {
+  const { data: { user } } = await supabase.auth.getUser();
+  const errInfo: SupabaseErrorInfo = {
+    error: error?.message || String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
+      userId: user?.id,
+      email: user?.email,
     },
     operationType,
     path
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.error('Supabase Error: ', JSON.stringify(errInfo));
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -254,29 +230,34 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Test connection to Firestore
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration. The client is offline.");
-        }
+    const fetchMenu = async () => {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .order('order', { ascending: true });
+
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, "products");
+      } else {
+        setMenuData(data || []);
       }
+      setLoading(false);
     };
-    testConnection();
 
-    // Fetch from Firestore ONLY
-    const q = query(collection(db, "products"), orderBy("order", "asc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMenuData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, "products");
-      setLoading(false);
-    });
+    fetchMenu();
 
-    return () => unsubscribe();
+    // Real-time subscription
+    const channel = supabase
+      .channel('products-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchMenu();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const categories = useMemo(() => {
@@ -422,16 +403,34 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
   const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
-    const q = query(collection(db, "faqs"), orderBy("order", "asc"));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setFaqData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, "faqs");
-      setLoading(false);
-    });
+    const fetchFaqs = async () => {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('faqs')
+        .select('*')
+        .order('order', { ascending: true });
 
-    return () => unsubscribe();
+      if (error) {
+        handleSupabaseError(error, OperationType.LIST, "faqs");
+      } else {
+        setFaqData(data || []);
+      }
+      setLoading(false);
+    };
+
+    fetchFaqs();
+
+    // Real-time subscription
+    const channel = supabase
+      .channel('faqs-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'faqs' }, () => {
+        fetchFaqs();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   if (loading) return null;
@@ -513,7 +512,7 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
 
 function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [password, setPassword] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
@@ -524,7 +523,21 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const checkUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setCurrentUser(user);
+      const savedSession = localStorage.getItem("admin_session");
+      if (savedSession === "Kama1233" || user?.email === "tengo.khunashvili@gmail.com") {
+        setIsLoggedIn(true);
+      } else {
+        setIsLoggedIn(false);
+      }
+    };
+
+    checkUser();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      const user = session?.user ?? null;
       setCurrentUser(user);
       const savedSession = localStorage.getItem("admin_session");
       if (savedSession === "Kama1233" || user?.email === "tengo.khunashvili@gmail.com") {
@@ -533,13 +546,19 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
         setIsLoggedIn(false);
       }
     });
-    return () => unsubscribe();
+
+    return () => subscription.unsubscribe();
   }, []);
 
   const handleGoogleLogin = async () => {
-    const provider = new GoogleAuthProvider();
     try {
-      await signInWithPopup(auth, provider);
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin + '/admin'
+        }
+      });
+      if (error) throw error;
     } catch (error) {
       console.error("Login error:", error);
       alert("Login failed. Check console.");
@@ -551,20 +570,12 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     setIsSyncing(true);
     try {
       // Clear existing products
-      const productsSnap = await getDocs(collection(db, "products")).catch(e => handleFirestoreError(e, OperationType.LIST, "products"));
-      if (productsSnap) {
-        for (const d of productsSnap.docs) {
-          await deleteDoc(doc(db, "products", d.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `products/${d.id}`));
-        }
-      }
+      const { error: delProdErr } = await supabase.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      if (delProdErr) await handleSupabaseError(delProdErr, OperationType.DELETE, "products");
 
       // Clear existing FAQs
-      const faqsSnap = await getDocs(collection(db, "faqs")).catch(e => handleFirestoreError(e, OperationType.LIST, "faqs"));
-      if (faqsSnap) {
-        for (const d of faqsSnap.docs) {
-          await deleteDoc(doc(db, "faqs", d.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `faqs/${d.id}`));
-        }
-      }
+      const { error: delFaqErr } = await supabase.from('faqs').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      if (delFaqErr) await handleSupabaseError(delFaqErr, OperationType.DELETE, "faqs");
 
       // Sync Products
       const menuResponse = await fetch(MENU_CSV_URL);
@@ -577,9 +588,10 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
           complete: async (results) => {
             try {
               let currentOrder = 0;
+              const productsToInsert = [];
               for (const row of results.data as any[]) {
                 const parseDescription = (val: string) => val ? val.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
-                await addDoc(collection(db, "products"), {
+                productsToInsert.push({
                   image: getRawGithubUrl(row["Image Link"]),
                   category_en: row["Category ENG"],
                   category_ka: row["Category GEO"],
@@ -595,10 +607,11 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
                     description: parseDescription(row["Description GEO"]),
                     nutrition: row["Nutriotion GEO"] || row["Nutrition GEO"],
                     category: row["Category GEO"]
-                  },
-                  createdAt: serverTimestamp()
-                }).catch(e => handleFirestoreError(e, OperationType.CREATE, "products"));
+                  }
+                });
               }
+              const { error } = await supabase.from('products').insert(productsToInsert);
+              if (error) throw error;
               resolve();
             } catch (e) { reject(e); }
           },
@@ -618,13 +631,16 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
             try {
               const rows = (results.data as any[]).slice(1);
               let currentFaqOrder = 0;
+              const faqsToInsert = [];
               for (const row of rows) {
-                await addDoc(collection(db, "faqs"), {
+                faqsToInsert.push({
                   order: currentFaqOrder++,
                   en: { question: row[3] || "", answer: row[4] || "" },
                   ka: { question: row[1] || "", answer: row[2] || "" }
-                }).catch(e => handleFirestoreError(e, OperationType.CREATE, "faqs"));
+                });
               }
+              const { error } = await supabase.from('faqs').insert(faqsToInsert);
+              if (error) throw error;
               resolve();
             } catch (e) { reject(e); }
           },
@@ -643,23 +659,24 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
 
   useEffect(() => {
     if (isLoggedIn) {
-      const qProducts = query(collection(db, "products"), orderBy("order", "asc"));
-      const unsubProducts = onSnapshot(qProducts, (snapshot) => {
-        setProducts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, "products");
-      });
+      const fetchAdminData = async () => {
+        const { data: pData, error: pErr } = await supabase.from('products').select('*').order('order', { ascending: true });
+        if (pErr) handleSupabaseError(pErr, OperationType.LIST, "products");
+        else setProducts(pData || []);
 
-      const qFaqs = query(collection(db, "faqs"), orderBy("order", "asc"));
-      const unsubFaqs = onSnapshot(qFaqs, (snapshot) => {
-        setFaqs(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
-      }, (error) => {
-        handleFirestoreError(error, OperationType.LIST, "faqs");
-      });
+        const { data: fData, error: fErr } = await supabase.from('faqs').select('*').order('order', { ascending: true });
+        if (fErr) handleSupabaseError(fErr, OperationType.LIST, "faqs");
+        else setFaqs(fData || []);
+      };
+
+      fetchAdminData();
+
+      const pChannel = supabase.channel('admin-products').on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, fetchAdminData).subscribe();
+      const fChannel = supabase.channel('admin-faqs').on('postgres_changes', { event: '*', schema: 'public', table: 'faqs' }, fetchAdminData).subscribe();
 
       return () => {
-        unsubProducts();
-        unsubFaqs();
+        supabase.removeChannel(pChannel);
+        supabase.removeChannel(fChannel);
       };
     }
   }, [isLoggedIn]);
@@ -681,13 +698,14 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     try {
       if (editingProduct.id) {
         const { id, ...data } = editingProduct;
-        await updateDoc(doc(db, "products", id), data).catch(e => handleFirestoreError(e, OperationType.UPDATE, `products/${id}`));
+        const { error } = await supabase.from('products').update(data).eq('id', id);
+        if (error) await handleSupabaseError(error, OperationType.UPDATE, `products/${id}`);
       } else {
-        await addDoc(collection(db, "products"), {
+        const { error } = await supabase.from('products').insert({
           ...editingProduct,
-          order: products.length,
-          createdAt: serverTimestamp()
-        }).catch(e => handleFirestoreError(e, OperationType.CREATE, "products"));
+          order: products.length
+        });
+        if (error) await handleSupabaseError(error, OperationType.CREATE, "products");
       }
       setEditingProduct(null);
     } catch (error) {
@@ -699,7 +717,8 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const handleDeleteProduct = async (id: string) => {
     if (window.confirm("Delete this product?")) {
       try {
-        await deleteDoc(doc(db, "products", id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `products/${id}`));
+        const { error } = await supabase.from('products').delete().eq('id', id);
+        if (error) await handleSupabaseError(error, OperationType.DELETE, `products/${id}`);
       } catch (error) {
         console.error("Delete error:", error);
       }
@@ -713,12 +732,14 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     try {
       if (editingFaq.id) {
         const { id, ...data } = editingFaq;
-        await updateDoc(doc(db, "faqs", id), data).catch(e => handleFirestoreError(e, OperationType.UPDATE, `faqs/${id}`));
+        const { error } = await supabase.from('faqs').update(data).eq('id', id);
+        if (error) await handleSupabaseError(error, OperationType.UPDATE, `faqs/${id}`);
       } else {
-        await addDoc(collection(db, "faqs"), {
+        const { error } = await supabase.from('faqs').insert({
           ...editingFaq,
           order: faqs.length
-        }).catch(e => handleFirestoreError(e, OperationType.CREATE, "faqs"));
+        });
+        if (error) await handleSupabaseError(error, OperationType.CREATE, "faqs");
       }
       setEditingFaq(null);
     } catch (error) {
@@ -788,7 +809,7 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
             </button>
             <button 
               onClick={async () => {
-                await signOut(auth);
+                await supabase.auth.signOut();
                 localStorage.removeItem("admin_session");
                 setIsLoggedIn(false);
               }} 
@@ -881,7 +902,12 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
                   </div>
                   <div className="flex gap-4">
                     <button onClick={() => setEditingFaq(f)} className="text-white/40 hover:text-[#D4FF00] transition-colors"><Edit2 size={18} /></button>
-                    <button onClick={async () => { if(window.confirm("Delete?")) await deleteDoc(doc(db, "faqs", f.id)) }} className="text-white/40 hover:text-red-500 transition-colors"><Trash2 size={18} /></button>
+                    <button onClick={async () => { 
+                      if(window.confirm("Delete?")) {
+                        const { error } = await supabase.from('faqs').delete().eq('id', f.id);
+                        if (error) await handleSupabaseError(error, OperationType.DELETE, `faqs/${f.id}`);
+                      }
+                    }} className="text-white/40 hover:text-red-500 transition-colors"><Trash2 size={18} /></button>
                   </div>
                 </div>
               ))}
@@ -1251,7 +1277,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { has
       let message = "Something went wrong.";
       try {
         const errInfo = JSON.parse(this.state.error.message);
-        if (errInfo.error.includes("Missing or insufficient permissions")) {
+        if (errInfo.error.includes("Missing or insufficient permissions") || errInfo.error.includes("row-level security policy") || errInfo.error.includes("permission denied")) {
           message = "You don't have permission to perform this action. Please make sure you are logged in as an admin.";
         }
       } catch (e) {
