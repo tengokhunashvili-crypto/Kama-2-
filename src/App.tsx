@@ -23,11 +23,9 @@ import {
   getDocs
 } from "firebase/firestore";
 import { 
-  signInWithPopup, 
-  GoogleAuthProvider, 
   onAuthStateChanged, 
   signOut,
-  User
+  signInAnonymously
 } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { 
@@ -578,7 +576,6 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
 function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [password, setPassword] = useState("");
-  const [user, setUser] = useState<User | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
   const [activeTab, setActiveTab] = useState<"products" | "faqs">("products");
@@ -652,14 +649,16 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => {
-      setUser(u);
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setIsLoggedIn(true);
+      }
     });
     return () => unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (isLoggedIn && user) {
+    if (isLoggedIn) {
       const qProducts = query(collection(db, "products"), orderBy("order", "asc"));
       const unsubProducts = onSnapshot(qProducts, (snapshot) => {
         setProducts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
@@ -675,23 +674,20 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
         unsubFaqs();
       };
     }
-  }, [isLoggedIn, user]);
+  }, [isLoggedIn]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === "admin") {
-      setIsLoggedIn(true);
+    if (password === "Kama1233") {
+      try {
+        await signInAnonymously(auth);
+        setIsLoggedIn(true);
+      } catch (error) {
+        console.error("Auth error:", error);
+        alert("Authentication failed");
+      }
     } else {
       alert("Incorrect password");
-    }
-  };
-
-  const signIn = async () => {
-    const provider = new GoogleAuthProvider();
-    try {
-      await signInWithPopup(auth, provider);
-    } catch (error) {
-      console.error("Auth error:", error);
     }
   };
 
@@ -764,34 +760,6 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     );
   }
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-4">
-        <div className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md text-center">
-          <h2 className="text-2xl font-big-noodle text-white mb-6 uppercase tracking-widest">VERIFY IDENTITY</h2>
-          <p className="text-white/60 text-xs mb-8 uppercase tracking-widest leading-relaxed">Please sign in with your Google account to verify admin access.</p>
-          <button onClick={signIn} className="w-full bg-white text-black font-bold py-3 rounded-lg hover:bg-gray-200 transition-colors uppercase tracking-widest flex items-center justify-center gap-3">
-            <img src="https://www.google.com/favicon.ico" className="w-4 h-4" alt="Google" />
-            SIGN IN WITH GOOGLE
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // Check if user is the specific admin
-  if (user.email !== "tengo.khunashvili@gmail.com") {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-4">
-        <div className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md text-center">
-          <h2 className="text-2xl font-big-noodle text-red-500 mb-4 uppercase tracking-widest">ACCESS DENIED</h2>
-          <p className="text-white/60 text-xs mb-8 uppercase tracking-widest leading-relaxed">Your account ({user.email}) does not have admin privileges.</p>
-          <button onClick={() => signOut(auth)} className="text-[#D4FF00] text-[10px] font-bold uppercase tracking-widest hover:underline">SIGN OUT</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-10">
       <div className="max-w-[1440px] mx-auto">
@@ -803,8 +771,13 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
             <h1 className="text-3xl md:text-5xl font-big-noodle uppercase tracking-widest">CMS DASHBOARD</h1>
           </div>
           <div className="flex items-center gap-6">
-            <span className="text-[10px] text-white/40 uppercase tracking-widest hidden md:block">{user.email}</span>
-            <button onClick={() => signOut(auth)} className="text-red-500 hover:text-red-400 transition-colors">
+            <button 
+              onClick={async () => {
+                await signOut(auth);
+                setIsLoggedIn(false);
+              }} 
+              className="text-red-500 hover:text-red-400 transition-colors"
+            >
               <LogOut size={20} />
             </button>
           </div>

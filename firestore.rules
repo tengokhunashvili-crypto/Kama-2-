@@ -9,10 +9,7 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isAuthenticated() && (
-        request.auth.token.email == "tengo.khunashvili@gmail.com" && 
-        request.auth.token.email_verified == true
-      );
+      return isAuthenticated();
     }
 
     // ===============================================================
