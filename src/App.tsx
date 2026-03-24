@@ -649,12 +649,10 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   };
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user) {
-        setIsLoggedIn(true);
-      }
-    });
-    return () => unsubscribe();
+    const savedSession = localStorage.getItem("admin_session");
+    if (savedSession === "Kama1233") {
+      setIsLoggedIn(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -676,16 +674,11 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     }
   }, [isLoggedIn]);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     if (password === "Kama1233") {
-      try {
-        await signInAnonymously(auth);
-        setIsLoggedIn(true);
-      } catch (error) {
-        console.error("Auth error:", error);
-        alert("Authentication failed");
-      }
+      localStorage.setItem("admin_session", "Kama1233");
+      setIsLoggedIn(true);
     } else {
       alert("Incorrect password");
     }
@@ -772,8 +765,8 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
           </div>
           <div className="flex items-center gap-6">
             <button 
-              onClick={async () => {
-                await signOut(auth);
+              onClick={() => {
+                localStorage.removeItem("admin_session");
                 setIsLoggedIn(false);
               }} 
               className="text-red-500 hover:text-red-400 transition-colors"
