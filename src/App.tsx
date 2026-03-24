@@ -212,70 +212,15 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Fetch from Firestore
+    // Fetch from Firestore ONLY
     const q = query(collection(db, "products"), orderBy("order", "asc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        setMenuData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
-        setLoading(false);
-      } else {
-        // Fallback to Google Sheets if Firestore is empty
-        fetchFromSheets();
-      }
+      setMenuData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      setLoading(false);
     }, (error) => {
       console.error("Firestore error:", error);
-      fetchFromSheets();
+      setLoading(false);
     });
-
-    const fetchFromSheets = async () => {
-      try {
-        const response = await fetch(MENU_CSV_URL);
-        const csvText = await response.text();
-        
-        Papa.parse(csvText, {
-          header: true,
-          skipEmptyLines: true,
-          transformHeader: (header) => header.trim(),
-          complete: (results) => {
-            const parsedData: Product[] = results.data.map((row: any, index: number) => {
-              const getVal = (keys: string[]) => {
-                const foundKey = Object.keys(row).find(k => keys.includes(k.trim()));
-                return foundKey ? row[foundKey] : "";
-              };
-
-              const parseDescription = (val: string) => {
-                if (!val) return [];
-                return val.split(",").map((s: string) => s.trim()).filter(Boolean);
-              };
-
-              return {
-                id: `sheet-${index}`,
-                image: getRawGithubUrl(getVal(["Image Link"])),
-                category_en: getVal(["Category ENG"]),
-                category_ka: getVal(["Category GEO"]),
-                en: {
-                  name: getVal(["Product name ENG", "Product Name ENG"]),
-                  description: parseDescription(getVal(["Description ENG"])),
-                  nutrition: getVal(["Nutriotion ENG", "Nutrition ENG"]),
-                  category: getVal(["Category ENG"])
-                },
-                ka: {
-                  name: getVal(["Product name GEO", "Product Name GEO"]),
-                  description: parseDescription(getVal(["Description GEO"])),
-                  nutrition: getVal(["Nutriotion GEO", "Nutrition GEO"]),
-                  category: getVal(["Category GEO"])
-                }
-              };
-            });
-            setMenuData(parsedData);
-            setLoading(false);
-          }
-        });
-      } catch (error) {
-        console.error("Error fetching menu data:", error);
-        setLoading(false);
-      }
-    };
 
     return () => unsubscribe();
   }, []);
@@ -421,57 +366,16 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const [debugData, setDebugData] = useState<string>("");
 
   useEffect(() => {
     const q = query(collection(db, "faqs"), orderBy("order", "asc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        setFaqData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
-        setLoading(false);
-      } else {
-        fetchFromSheets();
-      }
+      setFaqData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
+      setLoading(false);
     }, (error) => {
       console.error("FAQ Firestore error:", error);
-      fetchFromSheets();
+      setLoading(false);
     });
-
-    const fetchFromSheets = async () => {
-      try {
-        const response = await fetch(FAQ_CSV_URL);
-        const csvText = await response.text();
-        
-        const results = Papa.parse(csvText, { header: false, skipEmptyLines: true });
-        const data = results.data as any[][];
-        
-        if (!data || data.length < 2) {
-          setLoading(false);
-          return;
-        }
-
-        const rows = data.slice(1); // Skip header
-
-        const parsed: FAQItem[] = rows.map((row, idx) => ({
-          id: `sheet-${idx}`,
-          en: {
-            question: row[3] || "",
-            answer: row[4] || ""
-          },
-          ka: {
-            question: row[1] || "",
-            answer: row[2] || ""
-          }
-        })).filter(item => item.en.question || item.ka.question);
-
-        setFaqData(parsed);
-      } catch (err) {
-        console.error("FAQ Error:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
 
     return () => unsubscribe();
   }, []);
@@ -484,26 +388,6 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
         <div className="max-w-[1000px] mx-auto">
           <p className="text-red-500 font-albert mb-4 uppercase tracking-widest">FAQ Error</p>
           <p className="text-white mb-6">{error}</p>
-          
-          <button 
-            onClick={() => setShowDebug(!showDebug)}
-            className="text-xs text-white/30 hover:text-white/60 underline uppercase tracking-tighter"
-          >
-            {showDebug ? "Hide Debug Info" : "Show Debug Info"}
-          </button>
-
-          {showDebug && (
-            <div className="mt-8 p-4 bg-white/5 border border-white/10 rounded text-left overflow-auto max-h-60">
-              <p className="text-[10px] text-[#D4FF00] mb-2 uppercase font-mono">Raw Data (First 500 chars):</p>
-              <pre className="text-[10px] text-white/70 font-mono whitespace-pre-wrap">
-                {debugData || "No data received"}
-              </pre>
-              <p className="text-[10px] text-[#D4FF00] mt-4 mb-2 uppercase font-mono">URL Used:</p>
-              <code className="text-[10px] text-white/70 font-mono break-all">
-                {FAQ_CSV_URL}
-              </code>
-            </div>
-          )}
         </div>
       </section>
     );
@@ -585,62 +469,89 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const navigate = useNavigate();
 
   const syncFromSheets = async () => {
-    if (!window.confirm("This will import data from Google Sheets into Firestore. Continue?")) return;
+    if (!window.confirm("This will DELETE all existing products and FAQs in the CMS and replace them with data from Google Sheets. This is a one-time migration to disconnect from Excel. Continue?")) return;
     setIsSyncing(true);
     try {
-      if (activeTab === "products") {
-        const response = await fetch(MENU_CSV_URL);
-        const csvText = await response.text();
-        Papa.parse(csvText, {
+      // Clear existing products
+      const productsSnap = await getDocs(collection(db, "products"));
+      for (const d of productsSnap.docs) {
+        await deleteDoc(doc(db, "products", d.id));
+      }
+
+      // Clear existing FAQs
+      const faqsSnap = await getDocs(collection(db, "faqs"));
+      for (const d of faqsSnap.docs) {
+        await deleteDoc(doc(db, "faqs", d.id));
+      }
+
+      // Sync Products
+      const menuResponse = await fetch(MENU_CSV_URL);
+      const menuCsvText = await menuResponse.text();
+      
+      await new Promise<void>((resolve, reject) => {
+        Papa.parse(menuCsvText, {
           header: true,
           skipEmptyLines: true,
           complete: async (results) => {
-            for (const row of results.data as any[]) {
-              const parseDescription = (val: string) => val ? val.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
-              await addDoc(collection(db, "products"), {
-                image: getRawGithubUrl(row["Image Link"]),
-                category_en: row["Category ENG"],
-                category_ka: row["Category GEO"],
-                order: products.length,
-                en: {
-                  name: row["Product name ENG"] || row["Product Name ENG"],
-                  description: parseDescription(row["Description ENG"]),
-                  nutrition: row["Nutriotion ENG"] || row["Nutrition ENG"],
-                  category: row["Category ENG"]
-                },
-                ka: {
-                  name: row["Product name GEO"] || row["Product Name GEO"],
-                  description: parseDescription(row["Description GEO"]),
-                  nutrition: row["Nutriotion GEO"] || row["Nutrition GEO"],
-                  category: row["Category GEO"]
-                },
-                createdAt: serverTimestamp()
-              });
-            }
-            alert("Products synced!");
-            setIsSyncing(false);
-          }
+            try {
+              let currentOrder = 0;
+              for (const row of results.data as any[]) {
+                const parseDescription = (val: string) => val ? val.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+                await addDoc(collection(db, "products"), {
+                  image: getRawGithubUrl(row["Image Link"]),
+                  category_en: row["Category ENG"],
+                  category_ka: row["Category GEO"],
+                  order: currentOrder++,
+                  en: {
+                    name: row["Product name ENG"] || row["Product Name ENG"],
+                    description: parseDescription(row["Description ENG"]),
+                    nutrition: row["Nutriotion ENG"] || row["Nutrition ENG"],
+                    category: row["Category ENG"]
+                  },
+                  ka: {
+                    name: row["Product name GEO"] || row["Product Name GEO"],
+                    description: parseDescription(row["Description GEO"]),
+                    nutrition: row["Nutriotion GEO"] || row["Nutrition GEO"],
+                    category: row["Category GEO"]
+                  },
+                  createdAt: serverTimestamp()
+                });
+              }
+              resolve();
+            } catch (e) { reject(e); }
+          },
+          error: (err) => reject(err)
         });
-      } else {
-        const response = await fetch(FAQ_CSV_URL);
-        const csvText = await response.text();
-        Papa.parse(csvText, {
+      });
+
+      // Sync FAQs
+      const faqResponse = await fetch(FAQ_CSV_URL);
+      const faqCsvText = await faqResponse.text();
+      
+      await new Promise<void>((resolve, reject) => {
+        Papa.parse(faqCsvText, {
           header: false,
           skipEmptyLines: true,
           complete: async (results) => {
-            const rows = (results.data as any[]).slice(1);
-            for (const row of rows) {
-              await addDoc(collection(db, "faqs"), {
-                order: faqs.length,
-                en: { question: row[3] || "", answer: row[4] || "" },
-                ka: { question: row[1] || "", answer: row[2] || "" }
-              });
-            }
-            alert("FAQs synced!");
-            setIsSyncing(false);
-          }
+            try {
+              const rows = (results.data as any[]).slice(1);
+              let currentFaqOrder = 0;
+              for (const row of rows) {
+                await addDoc(collection(db, "faqs"), {
+                  order: currentFaqOrder++,
+                  en: { question: row[3] || "", answer: row[4] || "" },
+                  ka: { question: row[1] || "", answer: row[2] || "" }
+                });
+              }
+              resolve();
+            } catch (e) { reject(e); }
+          },
+          error: (err) => reject(err)
         });
-      }
+      });
+
+      alert("Migration complete! All products and FAQs are now in the CMS.");
+      setIsSyncing(false);
     } catch (error) {
       console.error("Sync error:", error);
       alert("Sync failed. Check console.");
@@ -763,7 +674,15 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
             </button>
             <h1 className="text-3xl md:text-5xl font-big-noodle uppercase tracking-widest">CMS DASHBOARD</h1>
           </div>
-          <div className="flex items-center gap-6">
+          <div className="flex flex-col md:flex-row gap-4 items-center">
+            <button 
+              onClick={syncFromSheets}
+              disabled={isSyncing}
+              className="flex items-center gap-2 bg-white/5 hover:bg-white/10 text-white px-4 py-2 rounded-lg border border-white/10 transition-colors disabled:opacity-50 text-[10px] font-bold uppercase tracking-widest"
+            >
+              <Settings size={14} className={isSyncing ? "animate-spin" : ""} />
+              {isSyncing ? "MIGRATING..." : "MIGRATE FROM EXCEL"}
+            </button>
             <button 
               onClick={() => {
                 localStorage.removeItem("admin_session");
