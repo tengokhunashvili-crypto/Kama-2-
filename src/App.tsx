@@ -6,7 +6,7 @@
 import { motion, useScroll, useTransform, useSpring } from "motion/react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useGLTF, useAnimations, Environment, Float } from "@react-three/drei";
-import { Suspense, useEffect, useRef, useState, useCallback, useMemo } from "react";
+import React, { Suspense, useEffect, useRef, useState, useCallback, useMemo } from "react";
 import * as THREE from "three";
 import Papa from "papaparse";
 import { BrowserRouter, Routes, Route, useNavigate, Link } from "react-router-dom";
@@ -20,12 +20,16 @@ import {
   query, 
   orderBy, 
   serverTimestamp,
-  getDocs
+  getDocs,
+  getDocFromServer
 } from "firebase/firestore";
 import { 
   onAuthStateChanged, 
   signOut,
-  signInAnonymously
+  signInAnonymously,
+  GoogleAuthProvider,
+  signInWithPopup,
+  User
 } from "firebase/auth";
 import { db, auth } from "./firebase";
 import { 
@@ -38,8 +42,46 @@ import {
   X, 
   LogOut, 
   Settings,
-  ArrowLeft
+  ArrowLeft,
+  LogIn
 } from "lucide-react";
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
 
 const MENU_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQWkJMSOHk9DU0GtY_0XbHqG9eaYWqyqg5CDhiaaptCwO0clQ8zwkfFLFDnTaDKhhGVN9wBP68bSUUW/pub?output=csv&sheet=FAQ";
 const FAQ_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQWkJMSOHk9DU0GtY_0XbHqG9eaYWqyqg5CDhiaaptCwO0clQ8zwkfFLFDnTaDKhhGVN9wBP68bSUUW/pub?output=csv&sheet=FAQ_REAL"; // Placeholder if they have a real FAQ sheet
@@ -212,13 +254,25 @@ function MenuSection({ lang }: { lang: "en" | "ka" }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Test connection to Firestore
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration. The client is offline.");
+        }
+      }
+    };
+    testConnection();
+
     // Fetch from Firestore ONLY
     const q = query(collection(db, "products"), orderBy("order", "asc"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setMenuData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
       setLoading(false);
     }, (error) => {
-      console.error("Firestore error:", error);
+      handleFirestoreError(error, OperationType.LIST, "products");
       setLoading(false);
     });
 
@@ -373,7 +427,7 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
       setFaqData(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
       setLoading(false);
     }, (error) => {
-      console.error("FAQ Firestore error:", error);
+      handleFirestoreError(error, OperationType.LIST, "faqs");
       setLoading(false);
     });
 
@@ -459,6 +513,7 @@ function FAQSection({ lang }: { lang: "en" | "ka" }) {
 
 function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [password, setPassword] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [faqs, setFaqs] = useState<FAQItem[]>([]);
@@ -468,20 +523,47 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   const [isSyncing, setIsSyncing] = useState(false);
   const navigate = useNavigate();
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      const savedSession = localStorage.getItem("admin_session");
+      if (savedSession === "Kama1233" || user?.email === "tengo.khunashvili@gmail.com") {
+        setIsLoggedIn(true);
+      } else {
+        setIsLoggedIn(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+    } catch (error) {
+      console.error("Login error:", error);
+      alert("Login failed. Check console.");
+    }
+  };
+
   const syncFromSheets = async () => {
     if (!window.confirm("This will DELETE all existing products and FAQs in the CMS and replace them with data from Google Sheets. This is a one-time migration to disconnect from Excel. Continue?")) return;
     setIsSyncing(true);
     try {
       // Clear existing products
-      const productsSnap = await getDocs(collection(db, "products"));
-      for (const d of productsSnap.docs) {
-        await deleteDoc(doc(db, "products", d.id));
+      const productsSnap = await getDocs(collection(db, "products")).catch(e => handleFirestoreError(e, OperationType.LIST, "products"));
+      if (productsSnap) {
+        for (const d of productsSnap.docs) {
+          await deleteDoc(doc(db, "products", d.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `products/${d.id}`));
+        }
       }
 
       // Clear existing FAQs
-      const faqsSnap = await getDocs(collection(db, "faqs"));
-      for (const d of faqsSnap.docs) {
-        await deleteDoc(doc(db, "faqs", d.id));
+      const faqsSnap = await getDocs(collection(db, "faqs")).catch(e => handleFirestoreError(e, OperationType.LIST, "faqs"));
+      if (faqsSnap) {
+        for (const d of faqsSnap.docs) {
+          await deleteDoc(doc(db, "faqs", d.id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `faqs/${d.id}`));
+        }
       }
 
       // Sync Products
@@ -515,7 +597,7 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
                     category: row["Category GEO"]
                   },
                   createdAt: serverTimestamp()
-                });
+                }).catch(e => handleFirestoreError(e, OperationType.CREATE, "products"));
               }
               resolve();
             } catch (e) { reject(e); }
@@ -541,7 +623,7 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
                   order: currentFaqOrder++,
                   en: { question: row[3] || "", answer: row[4] || "" },
                   ka: { question: row[1] || "", answer: row[2] || "" }
-                });
+                }).catch(e => handleFirestoreError(e, OperationType.CREATE, "faqs"));
               }
               resolve();
             } catch (e) { reject(e); }
@@ -560,22 +642,19 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   };
 
   useEffect(() => {
-    const savedSession = localStorage.getItem("admin_session");
-    if (savedSession === "Kama1233") {
-      setIsLoggedIn(true);
-    }
-  }, []);
-
-  useEffect(() => {
     if (isLoggedIn) {
       const qProducts = query(collection(db, "products"), orderBy("order", "asc"));
       const unsubProducts = onSnapshot(qProducts, (snapshot) => {
         setProducts(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product)));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, "products");
       });
 
       const qFaqs = query(collection(db, "faqs"), orderBy("order", "asc"));
       const unsubFaqs = onSnapshot(qFaqs, (snapshot) => {
         setFaqs(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as FAQItem)));
+      }, (error) => {
+        handleFirestoreError(error, OperationType.LIST, "faqs");
       });
 
       return () => {
@@ -602,13 +681,13 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     try {
       if (editingProduct.id) {
         const { id, ...data } = editingProduct;
-        await updateDoc(doc(db, "products", id), data);
+        await updateDoc(doc(db, "products", id), data).catch(e => handleFirestoreError(e, OperationType.UPDATE, `products/${id}`));
       } else {
         await addDoc(collection(db, "products"), {
           ...editingProduct,
           order: products.length,
           createdAt: serverTimestamp()
-        });
+        }).catch(e => handleFirestoreError(e, OperationType.CREATE, "products"));
       }
       setEditingProduct(null);
     } catch (error) {
@@ -619,7 +698,11 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
 
   const handleDeleteProduct = async (id: string) => {
     if (window.confirm("Delete this product?")) {
-      await deleteDoc(doc(db, "products", id));
+      try {
+        await deleteDoc(doc(db, "products", id)).catch(e => handleFirestoreError(e, OperationType.DELETE, `products/${id}`));
+      } catch (error) {
+        console.error("Delete error:", error);
+      }
     }
   };
 
@@ -630,12 +713,12 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
     try {
       if (editingFaq.id) {
         const { id, ...data } = editingFaq;
-        await updateDoc(doc(db, "faqs", id), data);
+        await updateDoc(doc(db, "faqs", id), data).catch(e => handleFirestoreError(e, OperationType.UPDATE, `faqs/${id}`));
       } else {
         await addDoc(collection(db, "faqs"), {
           ...editingFaq,
           order: faqs.length
-        });
+        }).catch(e => handleFirestoreError(e, OperationType.CREATE, "faqs"));
       }
       setEditingFaq(null);
     } catch (error) {
@@ -646,20 +729,35 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-4">
-        <form onSubmit={handleLogin} className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md">
+        <div className="bg-zinc-900 p-8 rounded-2xl border border-white/10 w-full max-w-md">
           <h2 className="text-2xl font-big-noodle text-white mb-6 uppercase tracking-widest text-center">ADMIN LOGIN</h2>
-          <input 
-            type="password" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Enter Password"
-            className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-white mb-4 focus:border-[#D4FF00] outline-none"
-          />
-          <button type="submit" className="w-full bg-[#D4FF00] text-black font-bold py-3 rounded-lg hover:bg-[#b8dd00] transition-colors uppercase tracking-widest">
-            ENTER
+          
+          <button 
+            onClick={handleGoogleLogin}
+            className="w-full flex items-center justify-center gap-3 bg-white text-black font-bold py-3 rounded-lg hover:bg-white/90 transition-colors uppercase tracking-widest mb-6"
+          >
+            <LogIn size={18} /> SIGN IN WITH GOOGLE
           </button>
+
+          <div className="relative flex items-center justify-center mb-6">
+            <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-white/10"></div></div>
+            <span className="relative bg-zinc-900 px-4 text-[10px] text-white/40 uppercase tracking-widest">OR USE PASSWORD</span>
+          </div>
+
+          <form onSubmit={handleLogin}>
+            <input 
+              type="password" 
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter Password"
+              className="w-full bg-black border border-white/10 rounded-lg px-4 py-3 text-white mb-4 focus:border-[#D4FF00] outline-none"
+            />
+            <button type="submit" className="w-full bg-[#D4FF00] text-black font-bold py-3 rounded-lg hover:bg-[#b8dd00] transition-colors uppercase tracking-widest">
+              ENTER
+            </button>
+          </form>
           <Link to="/" className="block text-center text-white/40 text-[10px] mt-6 uppercase tracking-widest hover:text-white">BACK TO SITE</Link>
-        </form>
+        </div>
       </div>
     );
   }
@@ -675,6 +773,11 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
             <h1 className="text-3xl md:text-5xl font-big-noodle uppercase tracking-widest">CMS DASHBOARD</h1>
           </div>
           <div className="flex flex-col md:flex-row gap-4 items-center">
+            {currentUser && (
+              <div className="flex items-center gap-2 text-[10px] text-white/40 uppercase tracking-widest">
+                <span>{currentUser.email}</span>
+              </div>
+            )}
             <button 
               onClick={syncFromSheets}
               disabled={isSyncing}
@@ -684,7 +787,8 @@ function AdminDashboard({ lang }: { lang: "en" | "ka" }) {
               {isSyncing ? "MIGRATING..." : "MIGRATE FROM EXCEL"}
             </button>
             <button 
-              onClick={() => {
+              onClick={async () => {
+                await signOut(auth);
                 localStorage.removeItem("admin_session");
                 setIsLoggedIn(false);
               }} 
@@ -1132,15 +1236,57 @@ function MainApp({ lang, setLang }: { lang: "en" | "ka"; setLang: (l: "en" | "ka
   );
 }
 
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      let message = "Something went wrong.";
+      try {
+        const errInfo = JSON.parse(this.state.error.message);
+        if (errInfo.error.includes("Missing or insufficient permissions")) {
+          message = "You don't have permission to perform this action. Please make sure you are logged in as an admin.";
+        }
+      } catch (e) {
+        // Not a JSON error
+      }
+      return (
+        <div className="min-h-screen bg-black text-white flex items-center justify-center p-8 text-center">
+          <div className="max-w-md">
+            <h1 className="text-4xl font-big-noodle mb-4 uppercase text-[#D4FF00]">ERROR</h1>
+            <p className="text-white/60 mb-8 uppercase tracking-widest text-xs leading-relaxed">{message}</p>
+            <button 
+              onClick={() => window.location.reload()} 
+              className="bg-[#D4FF00] text-black px-8 py-3 rounded-full font-bold text-xs tracking-widest uppercase hover:bg-[#b8dd00] transition-colors"
+            >
+              RELOAD APP
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const [lang, setLang] = useState<"en" | "ka">("en");
 
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<MainApp lang={lang} setLang={setLang} />} />
-        <Route path="/admin" element={<AdminDashboard lang={lang} />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<MainApp lang={lang} setLang={setLang} />} />
+          <Route path="/admin" element={<AdminDashboard lang={lang} />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

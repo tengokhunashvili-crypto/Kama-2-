@@ -51,6 +51,25 @@
         "order": { "type": "number" }
       },
       "required": ["en", "ka"]
+    },
+    "Settings": {
+      "title": "Settings",
+      "description": "Global application settings and content.",
+      "type": "object",
+      "properties": {
+        "heroImage": { "type": "string" },
+        "logo": { "type": "string" },
+        "seoTextLeftEn": { "type": "string" },
+        "seoTextLeftKa": { "type": "string" },
+        "seoTextRightEn": { "type": "string" },
+        "seoTextRightKa": { "type": "string" },
+        "footerDescriptionEn": { "type": "string" },
+        "footerDescriptionKa": { "type": "string" },
+        "locationEn": { "type": "string" },
+        "locationKa": { "type": "string" },
+        "instagramUrl": { "type": "string" },
+        "facebookUrl": { "type": "string" }
+      }
     }
   },
   "firestore": {
@@ -61,6 +80,10 @@
     "faqs": {
       "schema": "FAQ",
       "description": "Collection of frequently asked questions."
+    },
+    "settings": {
+      "schema": "Settings",
+      "description": "Global application settings."
     }
   }
 }
