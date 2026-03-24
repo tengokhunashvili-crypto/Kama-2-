@@ -19,7 +19,6 @@
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
     "firebase": "^12.11.0",
-    "framer-motion-3d": "^12.4.13",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "papaparse": "^5.5.3",
