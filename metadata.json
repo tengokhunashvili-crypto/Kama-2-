@@ -1,0 +1,5 @@
+{
+  "name": "Kama Bar Menu",
+  "description": "A bilingual (GEO/ENG) menu for Kama Bar, featuring product categories, descriptions, and nutritional information from a live Google Sheet.",
+  "requestFramePermissions": []
+}
